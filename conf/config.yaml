@@ -1,0 +1,313 @@
+# 実験するたびにここを変更しない。基本はスクリプトから変更する。
+# python train.py --override exp_dir=results/test2 model.unet.start_ch=32
+# 上記のように--overrideの後に変更したい変数を書くことで設定を変更できる
+exp_dir: results/test
+
+# paired: source/targetの2ディレクトリ
+# self_supervised_deblur / self_supervised_slice_completion: sourceのみを使用
+training_mode: paired
+source_data_dir: datasets_source
+target_data_dir: datasets_target # self_supervised_deblurでは指定不要（sourceを再利用）
+# 正解なしtest画像を学習中にTensorBoardへ記録する場合に指定（空文字で無効）
+test_data_dir: ""
+test_image_log:
+  max_images: 3
+  seed: 0 # epoch間の比較用にI2I-RFR初期ノイズを固定
+  require_heart_mask: true # .mask.hdrの指定heart_bit中心でcrop
+  heart_bit: null # nullはbit_info.heart_bitを使用。testマスクだけ異なる場合は指定
+num_train_steps: 10000000
+eval_every: 2000
+num_workers: 4
+batch_size: 16 # I2I-RFRではsource/targetとRFR中間テンソルを保持するため小さめにする
+prefetch_size: 1
+
+debug_time: False
+debug_train_val: False
+debug_dataloader: False # debug_dataloaderで設定されるので触る必要はない
+gpu: 0
+gpu_allow_growth: False
+enable_profiling: False
+
+restore: "" # 実験を再開する場合はここにチェックポイントのパスを指定
+finetune: "" # 事前学習済みモデルを指定する場合はここにパスを指定
+
+model:
+  name: unet # unet / pix2pix_generator
+  input_num_channel: 1
+  num_channel: 1 # target image channels
+  unet:
+    start_ch: 40
+    depth: 4
+    num_encode_blocks: 2
+    num_decode_blocks: 1
+    # Z方向の解像度が粗くcropも薄いため、基本はXY畳み込みにする
+    conv_kernel_size_zyx: [1,3,3]
+    # z_conv_interval回に1回だけZ方向も畳み込む
+    z_conv_kernel_size_zyx: [3,3,3]
+    z_conv_interval: 3 # 0にするとZ方向の間引き畳み込みを無効化
+    # scheduled 3D Convを[1,Y,X] -> [Z,1,1]へ分解し、残差接続を加える
+    factorized_z_conv: true
+    factorized_residual: true
+    downsample_type: max_pool # max_pool or stride_conv
+    pool_size_zyx: [1,2,2] # Z方向をdownsampleしない
+    down_kernel_size_zyx: [1,3,3] # stride_conv用
+    upsample_type: transpose_conv # transpose_conv or resize_conv
+    up_kernel_size_zyx: [1,4,4]
+    up_strides_zyx: [1,2,2]
+    resize_conv_kernel_size_zyx: [1,3,3] # resize_conv用
+    # 0始まりのencoder stage番号。指定stageだけZを追加downsampleする
+    z_downsample_stages: [1,2]
+    z_down_kernel_size_zyx: [4,1,1]
+    z_down_strides_zyx: [2,1,1]
+    z_upsample_type: transpose_conv # transpose_conv or resize_conv
+    z_up_kernel_size_zyx: [4,1,1]
+  # Pix2Pix Generatorのblock構成を3D CT向けに軽量化したモデル
+  pix2pix_generator:
+    start_ch: 16
+    depth: 4
+    max_ch: 128
+    down_kernel_size_zyx: [1,4,4]
+    strides_zyx: [1,2,2] # Z方向をdownsampleしない
+    up_kernel_size_zyx: [1,4,4]
+    dropout_depth: 2 # bottleneckに近いdecoder blockでdropout
+    dropout_rate: 0.3
+    leaky_relu_alpha: 0.2
+  # 通常のbatch normを使う場合はr_maxを1、d_maxを0としてください
+  renorm:
+    r_max: 1.0 # 1 for batch norm
+    d_max: 0.0 # 0 for batch norm
+    warmup_steps: 5000
+    change_d_steps: 25000
+    change_r_steps: 40000
+
+optimizer:
+  name: adamw
+  sgd:
+    warmup_lr: 1e-4
+    max_lr: 0.1
+    warmup_ratio: 0.3
+    wd: 1e-6
+    momentum: 0.9
+    use_nesterov: True
+    clip_value: 10
+  adamw:
+    warmup_lr: 1e-5
+    max_lr: 1e-3
+    warmup_ratio: 0.3
+    wd: 1e-4
+    clip_value: 10
+
+aug:
+  crop_size_zyx: [8,192,192]
+  thick2thin_rate_zyx: [0.2,0.0,0.0]
+
+  affine:
+    norm_spacing_zyx: [3.0,0.5,0.5]
+    random_rot_deg_zyx: [180,180,180] # +-180度の範囲で回転
+    random_flip_axis_zyx: [False,False,True] #x=左右反転
+    random_scaling_range_zyx: [[0.15,0.15],[0.15,0.15],[0.15, 0.15]]
+    random_shift_rate_zyx: [0.,0.,0.] # 回転中心をランダムに選ぶのでここは０にした
+
+  random_sharpness:
+    # self-supervisedではclean targetには適用せずsourceだけに適用する。
+    # deblur targetへhaloを混入させないため標準では無効。
+    prob: 0.0
+    sigma: 3.0
+    alpha_range: [0.,2.]
+  random_gauss_filter:
+    prob: 0.0
+    sigma_range: [0.5,2.0]
+  random_gauss_noise:
+    # self-supervisedではclean targetには適用せずsourceだけに適用する。
+    prob: 0.0
+    stddev_range: [0.0,0.05]
+  random_normalize:
+    prob: 0.0 # 50%の確率で正規化を行う
+    random_center_deviation: 0.5 # 画像正規化時の中央値を変動させる(0-1)
+    random_range_deviation: 0.1 # 画像正規化時の範囲を変動させる(0-1)
+  random_gamma_correction:
+    prob: 0.0
+    random_gamma_range: [1.0,1.0] # 1.0-1.0で無効化 (0.65,0.65くらいがMRだとおすすめ)
+
+  # ランダムクロップの中心を決める方法（テスト時は臓器中心としている）
+  # data/dataloader_utils.pyのget_centerを参照
+  random_crop_method:
+    body: 0.0
+    organ: 0.9
+    organ_crop: 0.1
+    image: 0.0
+  margin: 15 # mm 臓器内でクロップ範囲を決める際のマージン
+  crop_keep_ratio: 0.3 # organ_cropのときにどれくらい元領域を残すか
+
+  # 学習cropの全Zスライスに心臓マスク(bit_info.heart_bit)が残るまで再抽選する
+  foreground_crop:
+    enabled: true
+    min_voxels_per_slice: 1
+    max_attempts: 20
+
+# 単一ディレクトリの画像をclean targetとし、入力側に合成blurを加える設定
+self_supervised_deblur:
+  # 大きな領域で劣化を生成してからaug.crop_size_zyxへcenter cropする。
+  # margin_zyxは片側の追加voxel数。ネットワーク入力サイズは変わらない。
+  context_crop:
+    enabled: False
+    margin_zyx: [0,32,32]
+  # 学習時に症例単位で劣化を完全にスキップする割合。validationには適用しない。
+  identity_probability: 0.25
+  # gaussian / cardiac_motion / cardiac_motion_gaussian
+  degradation_type: gaussian
+  sigma_range: [0.5,2.0] # 学習時に画像ごとに選ぶGaussian sigma（voxel単位）
+  validation_sigma: 1.25 # validation時は再現可能な固定sigmaを使う
+  # 投影データを使わず、画像空間で複数心拍位相をwarp・平均するCT向け近似
+  cardiac_motion:
+    num_phases: 5
+    # nullなら固定。例: [3,7]なら学習時に画像ごとに3/5/7から選択
+    # validationは上のnum_phasesを固定使用する
+    num_phases_range: null
+    max_translation_mm_yx: [3.0,3.0]
+    max_rotation_deg: 3.0
+    max_scale_delta: 0.04
+    roi_center_yx: [0.5,0.5] # crop内の心臓中心（0-1）
+    roi_sigma_ratio_yx: [0.25,0.25] # motionを局在化するGaussian ROI
+    # 両端の心位相を強くして、実データに近い二重輪郭を生成する
+    phase_weight_mode: bimodal # uniform / bimodal
+    bimodal_peak_sigma_range: [0.2,0.4]
+    bimodal_balance_range: [0.35,0.65] # 2つの輪郭の強度比
+    uniform_phase_weight_mix: 0.1 # 中間位相を残す割合
+    # 心運動軌道の非対称性と、ヘリカル撮影を近似するZ方向の位相差
+    max_temporal_asymmetry: 0.3
+    max_z_phase_offset: 0.35
+    # 各voxelの重み付き平均変位を0にし、二重線の中央をclean targetに固定
+    center_preserving: True
+    # bit_info.heart_bitの心臓マスク境界をXY方向にsoft化する半径（pixel）
+    heart_mask_softening_px: 6
+    # validationでは固定パラメータを使い、症例間比較を再現可能にする
+    validation_translation_mm_yx: [2.0,-2.0]
+    validation_rotation_deg: 2.0
+    validation_scale_delta: 0.025
+    validation_bimodal_peak_sigma: 0.3
+    validation_bimodal_balance: 0.5
+    validation_temporal_asymmetry: 0.2
+    validation_z_phase_offset: 0.25
+  # degradation_typeとは独立に併用できるZ方向のスライス厚劣化
+  slice_thickness:
+    enabled: True
+    clean_thickness_mm: 3.0
+    degraded_thickness_mm: 5.0
+    # gaussian_fwhm: 厚さをGaussian FWHMとみなす
+    # box_variance: 矩形スライス平均の分散に合わせる（実測sigmaに近い方式）
+    profile_model: gaussian_fwhm
+    gaussian_truncate: 3.0
+
+# 1 mm等のdense volumeを正解にし、Zスライスを間引いて元の格子へ復元する。
+# keep_every_n=5は元スライスの1/5、8は1/8だけを入力の観測値として残す。
+self_supervised_slice_completion:
+  keep_every_n_values: [2,3,4,5,6,8]
+  # nullは上記倍率を均等に選択。指定時はkeep_every_n_valuesと同じ長さにする。
+  sampling_weights: null
+  random_offset: True
+  # Keras validationで使用する固定倍率。倍率別の詳細評価は別途実行できる。
+  validation_factor: 8
+  validation_offset: 0
+  fill_mode: linear
+  # 最終出力の観測スライスを入力値で置換し、実測値を厳密に保存する。
+  preserve_observed_slices: True
+  # crop端でも前後の観測スライスから補間できるよう、間引き前だけZ contextを持つ。
+  context_crop:
+    enabled: True
+    margin_zyx: [8,0,0]
+  # 実際の厚いスライスのslice sensitivity profileをGaussianで近似してから間引く。
+  slice_profile_blur:
+    enabled: False
+    clean_thickness_mm: 1.0
+    # nullではkeep_every_n * norm_spacing_zを症例ごとの劣化後厚さにする。
+    degraded_thickness_mm: null
+    # gaussian_fwhm / box_variance
+    profile_model: box_variance
+    gaussian_truncate: 3.0
+
+# 実non-gatedとclean画像から生成した劣化画像の分布を比較する。
+# python calibrate_degradation.py --clean-data-dir ... --real-data-dir ...
+degradation_calibration:
+  clean_data_dir: ""
+  real_data_dir: ""
+  output_dir: results/degradation_calibration
+  clean_heart_bit: null # nullはbit_info.heart_bit
+  real_heart_bit: null # 実データだけheart bitが異なる場合に指定
+  max_cases_per_domain: 32 # 0で全症例。paired時は最大共通患者数
+  pairing:
+    enabled: false
+    # ファイル名をdelimiterで分割した最初の文字列を患者IDとする
+    delimiter: "_"
+    # 患者対応特徴距離を総合scoreへ加える重み
+    score_weight: 1.0
+  batch_size: 4
+  simulations_per_clean: 1
+  seed: 0
+  roi_margin_px: 8 # 心臓境界外のartifactも含めるXY margin
+  max_autocorrelation_lag_px: 12
+  classifier_folds: 5
+  classifier_l2: 0.1
+  score_distance_clip: 10.0 # 低分散の単一特徴が総合scoreを支配するのを防ぐ
+  montages_per_trial: 4
+  difference_display_scale: 4.0
+  apply_identity_mixture: true
+  search:
+    # trial 0は現在のself_supervised_deblur設定。残りを下記範囲から探索する。
+    num_trials: 12
+    translation_mm_y_range: [1.0,6.0]
+    translation_mm_x_range: [1.0,6.0]
+    rotation_deg_range: [0.0,6.0]
+    scale_delta_range: [0.0,0.08]
+    temporal_asymmetry_range: [0.0,0.4]
+    z_phase_offset_range: [0.0,0.8]
+    heart_mask_softening_px_range: [2,12]
+    uniform_phase_weight_mix_range: [0.0,0.3]
+    bimodal_peak_center_range: [0.15,0.5]
+    bimodal_peak_half_width_range: [0.02,0.15]
+    bimodal_balance_half_width_range: [0.05,0.3]
+    gaussian_sigma_min_range: [0.2,1.2]
+    gaussian_sigma_max_range: [1.0,3.0]
+    identity_probability_range: [0.0,0.3]
+
+i2i_rfr:
+  p: 1.0 # 論文デフォルト: L1
+  t_min: 0.01
+  inference_steps: 3
+  clip_output: True
+  # image: clean画像を直接予測、residual: clean-sourceを予測してsourceへ加算
+  prediction_type: residual
+
+loss:
+  rfr:
+    weight: 1.0
+  # XYの輪郭位置をtargetへ揃える補助損失。強すぎると境界を過強調する
+  gradient:
+    weight: 0.01
+    # I2I-RFRの1/tはpixel lossだけに適用し、補助lossには適用しない
+    time_reweight: false
+  slice_completion:
+    # 欠損スライスを主対象にし、観測スライスには弱い整合性lossだけを与える。
+    missing_weight: 1.0
+    observed_weight: 0.05
+    z_gradient_weight: 0.05
+
+image:
+  modality: CT # CT or MR　画像の正規化方法を変えます
+  CT:
+    window_level: 0 # HU
+    window_width: 2048 # HU
+  MR:
+    min_percentile: 5 # %
+    max_percentile: 95 # %
+
+bit_info:
+  heart_bit: 6
+  padding_bit: 15
+
+# validationの最終生成画像に対して計算する指標（trainのランダム時刻x0予測には適用しない）
+evaluation_metrics:
+  validation_seed: 0 # epoch間でI2I-RFR初期ノイズを固定
+  ssim_filter_size: 11 # axial 2D SSIMのGaussian window（正の奇数）
+  ssim_filter_sigma: 1.5
+  edge_epsilon: 1.0e-6
