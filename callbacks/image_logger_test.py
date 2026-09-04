@@ -35,7 +35,11 @@ class _FakeInferenceModel:
                 data["target_min_clip_vals"],
                 data["target_max_clip_vals"],
             )
-            return preds, preds, imgs, target
+            observed = tf.concat(
+                [tf.ones_like(target[:, :1]), tf.zeros_like(target[:, 1:])], axis=1
+            )
+            missing = 1.0 - observed
+            return preds, preds, imgs, target, observed, missing
         return preds
 
 
@@ -77,8 +81,27 @@ def test_image_logger_writes_source_only_test_images(tmp_path):
         for event in tf.compat.v1.train.summary_iterator(str(event_paths[0]))
         for value in event.summary.value
     }
-    assert "Test/Source Images" in tags
-    assert "Test/Translated Images" in tags
+    expected_tags = {
+        "Validation/Source/AX",
+        "Validation/Source/COR",
+        "Validation/Source/SAG",
+        "Validation/Target/AX",
+        "Validation/Target/COR",
+        "Validation/Target/SAG",
+        "Validation/Prediction/AX",
+        "Validation/Prediction/COR",
+        "Validation/Prediction/SAG",
+        "Validation/Observed Slice Mask/AX",
+        "Validation/Observed Slice Mask/COR",
+        "Validation/Observed Slice Mask/SAG",
+        "Test/Source/AX",
+        "Test/Source/COR",
+        "Test/Source/SAG",
+        "Test/Prediction/AX",
+        "Test/Prediction/COR",
+        "Test/Prediction/SAG",
+    }
+    assert expected_tags <= tags
 
 
 if __name__ == "__main__":

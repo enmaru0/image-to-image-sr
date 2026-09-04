@@ -76,6 +76,31 @@ class ImageLogger(keras.callbacks.Callback):
                 predict_test_step, reduce_retracing=True, jit_compile=jit_compile
             )
 
+    @staticmethod
+    def _orthogonal_slices(volume, axial_index=None):
+        """Extract center AX/COR/SAG planes from a [B, Z, Y, X, C] volume."""
+        if axial_index is None:
+            axial_index = volume.shape[1] // 2
+        coronal_index = volume.shape[2] // 2
+        sagittal_index = volume.shape[3] // 2
+        return {
+            "AX": volume[:, axial_index, :, :, :],
+            "COR": volume[:, :, coronal_index, :, :],
+            "SAG": volume[:, :, :, sagittal_index, :],
+        }
+
+    @classmethod
+    def _log_orthogonal_images(
+        cls, name, volume, step, axial_index=None, max_outputs=3
+    ):
+        for plane, image in cls._orthogonal_slices(volume, axial_index).items():
+            tf.summary.image(
+                f"{name}/{plane}",
+                image,
+                step=step,
+                max_outputs=max_outputs,
+            )
+
     def on_test_batch_end(self, batch, logs=None):
         """
         Logs the first batch (images and predictions) during validation.
@@ -91,6 +116,7 @@ class ImageLogger(keras.callbacks.Callback):
         missing_slice_msks = outputs[5] if len(outputs) > 5 else None
 
         with self.writer.as_default():
+            step = self.model.optimizer.iterations
             slice_num = imgs.shape[1] // 2  # center of z
             if missing_slice_msks is not None:
                 missing_indices = tf.where(missing_slice_msks[0, :, 0, 0, 0] > 0)[:, 0]
@@ -98,45 +124,50 @@ class ImageLogger(keras.callbacks.Callback):
                     distances = tf.abs(missing_indices - int(slice_num))
                     slice_num = int(missing_indices[tf.argmin(distances)].numpy())
             if self.first_log:
-                tf.summary.image(
-                    "Source Images",
-                    imgs[:, slice_num],
-                    step=self.model.optimizer.iterations,
+                self._log_orthogonal_images(
+                    "Validation/Source",
+                    imgs,
+                    step,
+                    axial_index=slice_num,
                 )
-                tf.summary.image(
-                    "Target Images",
-                    target_imgs[:, slice_num],
-                    step=self.model.optimizer.iterations,
+                self._log_orthogonal_images(
+                    "Validation/Target",
+                    target_imgs,
+                    step,
+                    axial_index=slice_num,
                 )
                 if observed_slice_msks is not None:
-                    x_center = observed_slice_msks.shape[3] // 2
-                    tf.summary.image(
-                        "Observed Slice Mask (ZY)",
-                        observed_slice_msks[:, :, :, x_center],
-                        step=self.model.optimizer.iterations,
+                    self._log_orthogonal_images(
+                        "Validation/Observed Slice Mask",
+                        observed_slice_msks,
+                        step,
+                        axial_index=slice_num,
                     )
                 self.first_log = False
-            tf.summary.image(
-                "Translated Images",
-                preds[:, slice_num],
-                step=self.model.optimizer.iterations,
+            self._log_orthogonal_images(
+                "Validation/Prediction",
+                preds,
+                step,
+                axial_index=slice_num,
             )
 
             if self.test_data is not None:
                 test_preds, test_imgs = self.test_one_step(self.test_data)
                 test_slice_num = test_imgs.shape[1] // 2
                 if self.first_test_log:
-                    tf.summary.image(
-                        "Test/Source Images",
-                        test_imgs[:, test_slice_num],
-                        step=self.model.optimizer.iterations,
+                    self._log_orthogonal_images(
+                        "Test/Source",
+                        test_imgs,
+                        step,
+                        axial_index=test_slice_num,
                         max_outputs=self.max_test_images,
                     )
                     self.first_test_log = False
-                tf.summary.image(
-                    "Test/Translated Images",
-                    test_preds[:, test_slice_num],
-                    step=self.model.optimizer.iterations,
+                self._log_orthogonal_images(
+                    "Test/Prediction",
+                    test_preds,
+                    step,
+                    axial_index=test_slice_num,
                     max_outputs=self.max_test_images,
                 )
 
