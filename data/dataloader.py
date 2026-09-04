@@ -27,6 +27,14 @@ from .utils import (
 )
 
 
+def uses_anatomical_masks(cfg):
+    """Whether the current task uses heart/body masks for crop localization."""
+    return (
+        str(getattr(cfg, "training_mode", "paired"))
+        != "self_supervised_slice_completion"
+    )
+
+
 def get_preprocess_crop_size_zyx(cfg, use_degradation_context=False):
     """Return the crop loaded by the CPU pipeline before synthetic degradation."""
     model_crop_size = np.asarray(cfg.aug.crop_size_zyx, dtype=np.int32)
@@ -74,6 +82,7 @@ def preprocess_image_np(
 
     model_crop_size_zyx = np.asarray(cfg.aug.crop_size_zyx, dtype=np.int32)
     crop_size_zyx = get_preprocess_crop_size_zyx(cfg, use_degradation_context)
+    use_anatomical_masks = uses_anatomical_masks(cfg)
     # <image>.mask.hdrのheart_bitに心臓マスクが入っている。
     organ_hdr_path = img_hdr_path.with_suffix(".mask.hdr")
     heart_bit = int(cfg.bit_info.heart_bit)
@@ -93,19 +102,28 @@ def preprocess_image_np(
         )
 
     full_box_zyxzyx = np.array([0, 0, 0] + list(img_size_zyx), np.int32)
-    body_box_zyxzyx = (
-        load_organ_box(body_box_path) if body_box_path.exists() else full_box_zyxzyx
-    )
-    organ_box_zyxzyx = (
-        load_organ_box(organ_box_path) if organ_box_path.exists() else body_box_zyxzyx
-    )
+    if use_anatomical_masks:
+        body_box_zyxzyx = (
+            load_organ_box(body_box_path) if body_box_path.exists() else full_box_zyxzyx
+        )
+        organ_box_zyxzyx = (
+            load_organ_box(organ_box_path)
+            if organ_box_path.exists()
+            else body_box_zyxzyx
+        )
+    else:
+        body_box_zyxzyx = full_box_zyxzyx
+        organ_box_zyxzyx = full_box_zyxzyx
 
     # アフィン変換のためのインスタンスを作成
     affine_transform = AffineTransform(crop_size_zyx=crop_size_zyx, **cfg.aug.affine)
 
     foreground_crop_cfg = getattr(cfg.aug, "foreground_crop", None)
     enforce_foreground_crop = bool(
-        is_training and foreground_crop_cfg is not None and foreground_crop_cfg.enabled
+        use_anatomical_masks
+        and is_training
+        and foreground_crop_cfg is not None
+        and foreground_crop_cfg.enabled
     )
     if enforce_foreground_crop and not organ_hdr_path.exists():
         raise FileNotFoundError(
@@ -124,13 +142,16 @@ def preprocess_image_np(
     # 変換前のboxだけで判定すると、X/Y軸回転後に端のスライスが背景だけになることがある。
     for crop_attempt in range(max_crop_attempts):
         # 心臓boxがない場合はorgan_box_zyxzyxがbody boxへフォールバックする。
+        random_crop_method = cfg.aug.random_crop_method
+        if not use_anatomical_masks:
+            random_crop_method = {"image": 1.0}
         crop_center_zyx = get_center(
             img_size_zyx,
             spacing_zyx,
             is_training,
             body_box_zyxzyx,
             organ_box_zyxzyx,
-            cfg.aug.random_crop_method,
+            random_crop_method,
             model_crop_size_zyx,
             cfg.aug.affine.norm_spacing_zyx,
             cfg.aug.margin,
@@ -146,7 +167,7 @@ def preprocess_image_np(
         # 画像などは切り取って読み込むので、その分アフィン行列をシフトさせる。
         affine_matrix = affine_transform.fix_start(affine_matrix, shift_start)
 
-        if not organ_hdr_path.exists():
+        if not use_anatomical_masks or not organ_hdr_path.exists():
             # 心臓マスクがないデータ。motion生成時はGaussian ROIへfallbackする。
             raw_msk = np.zeros(
                 img_region_zyxzyx[3:6] - img_region_zyxzyx[:3], np.uint16
@@ -389,6 +410,7 @@ def create_dataloader(
         img_hdr_path_list += value["img_hdr_list"]
     source_hdr_path_list = [pair[0] for pair in img_hdr_path_list]
     target_hdr_path_list = [pair[1] for pair in img_hdr_path_list]
+    use_anatomical_masks = uses_anatomical_masks(cfg)
 
     with multiprocessing.Pool(cfg.num_workers) as pool:
 
@@ -401,7 +423,9 @@ def create_dataloader(
                 pass
 
         # 指定された心臓bitからcrop中心決定用の矩形を計算しておく。
-        if any(path.with_suffix(".mask.hdr").exists() for path in source_hdr_path_list):
+        if use_anatomical_masks and any(
+            path.with_suffix(".mask.hdr").exists() for path in source_hdr_path_list
+        ):
             heart_bit = int(cfg.bit_info.heart_bit)
             func = partial(
                 save_organ_box,
@@ -411,7 +435,7 @@ def create_dataloader(
             )
             _run(func, "saving heart box")
 
-        if any(
+        if use_anatomical_masks and any(
             path.with_suffix(".body.mask.hdr").exists() for path in source_hdr_path_list
         ):
             func = partial(save_organ_box, suffix=".body")

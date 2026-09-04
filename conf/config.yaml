@@ -15,7 +15,7 @@ test_image_log:
   seed: 0 # epoch間の比較用にI2I-RFR初期ノイズを固定
   require_heart_mask: true # .mask.hdrの指定heart_bit中心でcrop
   heart_bit: null # nullはbit_info.heart_bitを使用。testマスクだけ異なる場合は指定
-num_train_steps: 10000000
+num_train_steps: 50000000
 eval_every: 2000
 num_workers: 4
 batch_size: 16 # I2I-RFRではsource/targetとRFR中間テンソルを保持するため小さめにする
@@ -36,9 +36,9 @@ model:
   input_num_channel: 1
   num_channel: 1 # target image channels
   unet:
-    start_ch: 40
+    start_ch: 32
     depth: 4
-    num_encode_blocks: 2
+    num_encode_blocks: 1
     num_decode_blocks: 1
     # Z方向の解像度が粗くcropも薄いため、基本はXY畳み込みにする
     conv_kernel_size_zyx: [1,3,3]
@@ -98,12 +98,12 @@ optimizer:
     clip_value: 10
 
 aug:
-  crop_size_zyx: [8,192,192]
-  thick2thin_rate_zyx: [0.2,0.0,0.0]
+  crop_size_zyx: [64,160,160]
+  thick2thin_rate_zyx: [0.0,0.0,0.0]
 
   affine:
-    norm_spacing_zyx: [3.0,0.5,0.5]
-    random_rot_deg_zyx: [180,180,180] # +-180度の範囲で回転
+    norm_spacing_zyx: [1.0,1.0,1.0]
+    random_rot_deg_zyx: [15,0,0] # +-180度の範囲で回転
     random_flip_axis_zyx: [False,False,True] #x=左右反転
     random_scaling_range_zyx: [[0.15,0.15],[0.15,0.15],[0.15, 0.15]]
     random_shift_rate_zyx: [0.,0.,0.] # 回転中心をランダムに選ぶのでここは０にした
@@ -133,8 +133,8 @@ aug:
   # data/dataloader_utils.pyのget_centerを参照
   random_crop_method:
     body: 0.0
-    organ: 0.9
-    organ_crop: 0.1
+    organ: 1.0
+    organ_crop: 0.0
     image: 0.0
   margin: 15 # mm 臓器内でクロップ範囲を決める際のマージン
   crop_keep_ratio: 0.3 # organ_cropのときにどれくらい元領域を残すか
@@ -202,6 +202,7 @@ self_supervised_deblur:
 # 1 mm等のdense volumeを正解にし、Zスライスを間引いて元の格子へ復元する。
 # keep_every_n=5は元スライスの1/5、8は1/8だけを入力の観測値として残す。
 self_supervised_slice_completion:
+  # このモードでは.mask.hdr/.body.mask.hdrを参照せず、画像全体からcropする。
   keep_every_n_values: [2,3,4,5,6,8]
   # nullは上記倍率を均等に選択。指定時はkeep_every_n_valuesと同じ長さにする。
   sampling_weights: null

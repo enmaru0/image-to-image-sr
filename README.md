@@ -261,6 +261,8 @@ sourceとclean targetは、学習時のTensorBoardに記録される `Source Ima
 `training_mode: self_supervised_slice_completion`では、dense volumeをclean
 targetとして再利用し、Zスライスを指定倍率で間引いた入力から元のvolumeを復元します。
 `keep_every_n_values`の5は元スライスの1/5、8は1/8だけを残す指定です。
+このモードでは心臓・体表マスクを参照せず、画像全体からcropします。
+`.mask.hdr`が存在しない場合や空の場合も、心臓box作成とforeground確認は行いません。
 
 ```bash
 python main.py --overrides \

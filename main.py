@@ -855,6 +855,8 @@ if __name__ == "__main__":
         require_heart_mask = bool(
             getattr(cfg.test_image_log, "require_heart_mask", True)
         )
+        if get_training_mode(cfg) == "self_supervised_slice_completion":
+            require_heart_mask = False
         test_dict = prepare_unpaired_data_dict(
             cfg.test_data_dir, require_heart_mask=require_heart_mask
         )
